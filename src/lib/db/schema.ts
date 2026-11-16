@@ -63,4 +63,36 @@ export const schemaStatements: string[] = [
   )`,
   `create index if not exists login_attempts_ip_idx on login_attempts (ip_hash, created_at)`,
   `create index if not exists login_attempts_created_idx on login_attempts (created_at)`,
+
+  // --- Acesso ao painel (contas no banco). Nenhuma migração cria usuário:
+  // o admin real nasce com `npm run admin:create`. Aditivo e idempotente.
+  `create table if not exists admin_users (
+    id serial primary key,
+    email text not null unique
+      check (email = lower(btrim(email)) and char_length(email) between 5 and 254 and email ~ '^[^@ ]+@[^@ ]+[.][^@ ]+$'),
+    display_name text not null default '' check (char_length(display_name) <= 80),
+    password_hash text not null check (char_length(password_hash) between 40 and 512),
+    session_version integer not null default 1,
+    active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    last_login_at timestamptz,
+    password_changed_at timestamptz not null default now()
+  )`,
+  `create table if not exists admin_audit (
+    id bigserial primary key,
+    user_id integer references admin_users(id) on delete set null,
+    event text not null check (event in ('login_success', 'login_failure', 'logout', 'password_changed', 'sessions_revoked', 'user_created', 'password_reset_cli')),
+    ip_hash text check (ip_hash is null or char_length(ip_hash) <= 64),
+    subject_hash text check (subject_hash is null or char_length(subject_hash) <= 64),
+    user_agent text check (user_agent is null or char_length(user_agent) <= 120),
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists admin_audit_created_idx on admin_audit (created_at)`,
+  `create index if not exists admin_audit_user_idx on admin_audit (user_id, created_at)`,
+  // Limite por conta (hash do e-mail) e por escopo (login | password).
+  `alter table login_attempts add column if not exists account_hash text check (account_hash is null or char_length(account_hash) <= 64)`,
+  `alter table login_attempts add column if not exists scope text not null default 'login' check (scope in ('login', 'password'))`,
+  `create index if not exists login_attempts_scope_idx on login_attempts (scope, created_at)`,
+
 ];

@@ -7,12 +7,13 @@ import { cn } from "@/lib/utils";
 const LINKS = [
   { href: "/admin", label: "Cardápio", icon: "ri-cake-3-line" },
   { href: "/admin/configuracoes", label: "Configurações", icon: "ri-settings-3-line" },
+  { href: "/admin/conta", label: "Minha conta", icon: "ri-user-settings-line" },
 ];
 
 export function AdminNav() {
   const pathname = usePathname();
   return (
-    <nav aria-label="Seções do painel" className="flex gap-2">
+    <nav aria-label="Seções do painel" className="flex flex-wrap gap-2">
       {LINKS.map((l) => {
         const active = l.href === "/admin" ? pathname === "/admin" || pathname.startsWith("/admin/item") : pathname.startsWith(l.href);
         return (

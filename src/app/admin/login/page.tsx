@@ -17,7 +17,7 @@ export default function LoginPage() {
         className="mx-auto size-40 drop-shadow-md"
       />
       <h1 className="mt-4 text-center font-display text-3xl font-black text-choc">Painel da DoZé</h1>
-      <p className="mt-1 text-center text-choc-deep">Entre com a sua senha para mexer no cardápio.</p>
+      <p className="mt-1 text-center text-choc-deep">Entre com o seu e-mail e a sua senha para mexer no cardápio.</p>
       <Suspense fallback={null}>
         <AlreadyLoggedIn />
       </Suspense>

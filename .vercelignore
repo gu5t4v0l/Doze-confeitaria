@@ -1,0 +1,22 @@
+# Arquivos que NÃO precisam ir para a Vercel (o build usa só src/, public/, package*.json, next.config.ts, tsconfig.json...).
+# Segredos: nunca subir
+.env
+.env.*
+!.env.example
+.vercel
+# Material de origem, testes e scripts locais
+sources/
+tests/
+scripts/
+vitest.config.mts
+# Documentação interna (README fica)
+AGENTS.md
+CLAUDE.md
+# Cache e saídas locais
+.next
+node_modules
+*.tsbuildinfo
+coverage/
+npm-debug.log*
+.DS_Store
+*.pem

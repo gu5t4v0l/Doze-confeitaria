@@ -10,7 +10,8 @@
     "test": "vitest run",
     "db:migrate": "tsx --env-file=.env.local scripts/db-migrate.ts",
     "db:seed": "tsx --env-file=.env.local scripts/db-seed.ts",
-    "admin:hash": "tsx scripts/admin-hash.ts",
+    "admin:create": "tsx --conditions=react-server --env-file=.env.local scripts/admin-create.ts",
+    "admin:reset": "tsx --conditions=react-server --env-file=.env.local scripts/admin-reset.ts",
     "brand:assets": "node scripts/make-brand-assets.mjs"
   },
   "dependencies": {

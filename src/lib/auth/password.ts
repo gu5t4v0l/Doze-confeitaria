@@ -52,3 +52,9 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const key = await derive(password, parsed.salt, { N: parsed.N, r: parsed.r, p: parsed.p }, parsed.key.length);
   return key.length === parsed.key.length && timingSafeEqual(key, parsed.key);
 }
+
+/**
+ * Hash FICTÍCIO com os MESMOS parâmetros do real (custo idêntico): usado quando o usuário não existe
+ * ou está inativo, para o scrypt rodar igual e o tempo não revelar nada. Não corresponde a nenhuma senha.
+ */
+export const DUMMY_HASH = ["scrypt", PARAMS.N, PARAMS.r, PARAMS.p, "A".repeat(22), "A".repeat(86)].join(":");

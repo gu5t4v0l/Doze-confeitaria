@@ -15,6 +15,25 @@ export function LoginForm() {
   return (
     <form action={formAction} className="mt-6 space-y-4 rounded-3xl border border-choc/25 bg-cream p-5 shadow-sm">
       <div className="space-y-1.5">
+        <Label htmlFor="email" className="text-sm font-semibold text-choc-deep">
+          E-mail
+        </Label>
+        <Input
+          id="email"
+          name="email"
+          type="email"
+          inputMode="email"
+          autoComplete="username"
+          required
+          maxLength={254}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          className="h-12"
+        />
+      </div>
+
+      <div className="space-y-1.5">
         <Label htmlFor="senha" className="text-sm font-semibold text-choc-deep">
           Senha
         </Label>

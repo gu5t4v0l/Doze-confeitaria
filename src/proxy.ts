@@ -1,16 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE } from "@/lib/auth/session-config";
-import { readSessionContext, verifySessionToken } from "@/lib/auth/session-token";
+import { readSessionSecret, verifySessionToken } from "@/lib/auth/session-token";
 
 /**
- * Primeira barreira para /admin/*. NÃO é a única: páginas, Server Actions e
- * route handlers do admin reverificam a sessão no servidor (requireAdmin()).
+ * Primeira barreira para /admin/*: só confere o JWT (assinatura/expiração), sem banco.
+ * NÃO é a única: páginas, Server Actions e route handlers do admin reverificam no servidor
+ * (requireAdmin(): JWT + consulta ao banco: usuário ativo e session_version atual).
  */
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isLogin = pathname === "/admin/login";
-  const ctx = readSessionContext();
-  const valid = ctx ? await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, ctx) : false;
+  if (pathname === "/admin/sessao-encerrada") return NextResponse.next(); // apaga o cookie de sessão revogada
+  const secret = readSessionSecret();
+  const claims = secret ? await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, secret) : null;
+  const valid = claims !== null;
 
   if (!valid && !isLogin) {
     return NextResponse.redirect(new URL("/admin/login", request.url));

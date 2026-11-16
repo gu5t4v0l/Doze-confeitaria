@@ -1,3 +1,4 @@
+import "server-only";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { isAdmin } from "@/lib/auth/session";
 import { BLOB_PATH_PREFIX } from "@/lib/blob-url";

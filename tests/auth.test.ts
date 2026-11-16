@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { SignJWT } from "jose";
-import { hashPassword, parseHash, verifyPassword } from "@/lib/auth/password";
-import { createSessionToken, passwordFingerprint, verifySessionToken } from "@/lib/auth/session-token";
-import { GLOBAL_FAILURE_THRESHOLD, IP_FAILURE_THRESHOLD, LOCKOUT_WINDOW_MS, lockoutRemainingMs } from "@/lib/auth/lockout";
+import { createHmac } from "node:crypto";
+import { DUMMY_HASH, hashPassword, parseHash, verifyPassword } from "@/lib/auth/password";
+import { createSessionToken, readSessionSecret, verifySessionToken } from "@/lib/auth/session-token";
+import { ACCOUNT_BACKOFF, ACCOUNT_FAILURE_THRESHOLD, GLOBAL_FAILURE_THRESHOLD, IP_FAILURE_THRESHOLD, LOCKOUT_WINDOW_MS, lockoutRemainingMs } from "@/lib/auth/lockout";
 import { SESSION_MAX_AGE_SECONDS } from "@/lib/auth/session-config";
 
 const SECRET = "x".repeat(40);
+const createHmacKey = () => new Uint8Array(createHmac("sha256", SECRET).update("doze:session").digest());
 
 describe("senha (scrypt)", () => {
   it("hash tem formato com parâmetros e salt, sem '$' e sem a senha", async () => {
@@ -37,58 +39,85 @@ describe("senha (scrypt)", () => {
   });
 });
 
-describe("sessão assinada (JWT HS256)", () => {
-  const ctx = { secret: SECRET, passwordHash: "scrypt:fake-hash" };
+describe("sessão assinada (JWT HS256, sub + sv)", () => {
+  const claims = { userId: 7, sessionVersion: 3 };
   const now = new Date("2026-11-15T12:00:00Z");
 
-  it("token válido é aceito", async () => {
-    const t = await createSessionToken(ctx, now);
-    expect(await verifySessionToken(t, ctx, now)).toBe(true);
-    expect(await verifySessionToken(t, ctx, new Date(now.getTime() + 47 * 3600_000))).toBe(true);
+  it("token válido é aceito e devolve sub/sv", async () => {
+    const t = await createSessionToken(SECRET, claims, now);
+    expect(await verifySessionToken(t, SECRET, now)).toEqual(claims);
+    expect(await verifySessionToken(t, SECRET, new Date(now.getTime() + 47 * 3600_000))).toEqual(claims);
+  });
+  it("não carrega e-mail, hash nem senha no token", async () => {
+    const t = await createSessionToken(SECRET, claims, now);
+    const payload = JSON.parse(Buffer.from(t.split(".")[1], "base64url").toString());
+    expect(Object.keys(payload).sort()).toEqual(["aud", "exp", "iat", "iss", "sub", "sv"]);
+    expect(payload.sub).toBe("7");
   });
   it("expira em 48 h", async () => {
     expect(SESSION_MAX_AGE_SECONDS).toBe(48 * 60 * 60);
-    const t = await createSessionToken(ctx, now);
+    const t = await createSessionToken(SECRET, claims, now);
     const after = new Date(now.getTime() + (SESSION_MAX_AGE_SECONDS + 5) * 1000);
-    expect(await verifySessionToken(t, ctx, after)).toBe(false);
+    expect(await verifySessionToken(t, SECRET, after)).toBeNull();
   });
   it("adulterado (payload ou assinatura) é recusado", async () => {
-    const t = await createSessionToken(ctx, now);
+    const t = await createSessionToken(SECRET, claims, now);
     const [h, p, s] = t.split(".");
-    const forgedPayload = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url").toString()), exp: 9999999999 })).toString("base64url");
-    expect(await verifySessionToken(`${h}.${forgedPayload}.${s}`, ctx, now)).toBe(false);
-    expect(await verifySessionToken(`${h}.${p}.${s.slice(0, -2)}AA`, ctx, now)).toBe(false);
-    expect(await verifySessionToken(`${h}.${p}.`, ctx, now)).toBe(false);
+    const forgedPayload = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url").toString()), sub: "1", sv: 99 })).toString("base64url");
+    expect(await verifySessionToken(`${h}.${forgedPayload}.${s}`, SECRET, now)).toBeNull();
+    expect(await verifySessionToken(`${h}.${p}.${s.slice(0, -2)}AA`, SECRET, now)).toBeNull();
+    expect(await verifySessionToken(`${h}.${p}.`, SECRET, now)).toBeNull();
   });
   it("segredo diferente é recusado", async () => {
-    const t = await createSessionToken(ctx, now);
-    expect(await verifySessionToken(t, { ...ctx, secret: "y".repeat(40) }, now)).toBe(false);
+    const t = await createSessionToken(SECRET, claims, now);
+    expect(await verifySessionToken(t, "y".repeat(40), now)).toBeNull();
   });
-  it("trocar a senha (hash) derruba sessões antigas", async () => {
-    const t = await createSessionToken(ctx, now);
-    expect(await verifySessionToken(t, { ...ctx, passwordHash: "scrypt:outro" }, now)).toBe(false);
-    expect(passwordFingerprint("a")).not.toBe(passwordFingerprint("b"));
-  });
-  it("alg none / outro algoritmo é recusado", async () => {
-    const unsigned = `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "admin", iss: "doze-confeitaria", aud: "admin", exp: 9999999999, pwv: passwordFingerprint(ctx.passwordHash) })).toString("base64url")}.`;
-    expect(await verifySessionToken(unsigned, ctx, now)).toBe(false);
-    const hs512 = await new SignJWT({ pwv: passwordFingerprint(ctx.passwordHash) })
-      .setProtectedHeader({ alg: "HS512" }).setIssuer("doze-confeitaria").setAudience("admin").setSubject("admin")
+  it("alg none / outro algoritmo / outro emissor é recusado", async () => {
+    const unsigned = `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "7", sv: 1, iss: "doze-confeitaria", aud: "admin", exp: 9999999999 })).toString("base64url")}.`;
+    expect(await verifySessionToken(unsigned, SECRET, now)).toBeNull();
+    const hs512 = await new SignJWT({ sv: 1 })
+      .setProtectedHeader({ alg: "HS512" }).setIssuer("doze-confeitaria").setAudience("admin").setSubject("7")
       .setExpirationTime("1h").sign(new TextEncoder().encode(SECRET));
-    expect(await verifySessionToken(hs512, ctx, new Date())).toBe(false);
-  });
-  it("token de outro emissor/audiência é recusado", async () => {
-    const other = await new SignJWT({ pwv: passwordFingerprint(ctx.passwordHash) })
-      .setProtectedHeader({ alg: "HS256" }).setIssuer("outro").setAudience("admin").setSubject("admin")
+    expect(await verifySessionToken(hs512, SECRET, new Date())).toBeNull();
+    const other = await new SignJWT({ sv: 1 })
+      .setProtectedHeader({ alg: "HS256" }).setIssuer("outro").setAudience("admin").setSubject("7")
       .setExpirationTime("1h").sign(new TextEncoder().encode(SECRET));
-    expect(await verifySessionToken(other, ctx, new Date())).toBe(false);
+    expect(await verifySessionToken(other, SECRET, new Date())).toBeNull();
   });
-  it("ausente/vazio/lixo => false; segredo curto => não cria token", async () => {
-    expect(await verifySessionToken(undefined, ctx, now)).toBe(false);
-    expect(await verifySessionToken("", ctx, now)).toBe(false);
-    expect(await verifySessionToken("a.b.c", ctx, now)).toBe(false);
-    await expect(createSessionToken({ ...ctx, secret: "curto" }, now)).rejects.toThrow();
-    expect(await verifySessionToken("a.b.c", { ...ctx, secret: "curto" }, now)).toBe(false);
+  it("token no formato antigo (sub 'admin', sem sv) é recusado", async () => {
+    const old = await new SignJWT({ pwv: "abc" })
+      .setProtectedHeader({ alg: "HS256" }).setIssuer("doze-confeitaria").setAudience("admin").setSubject("admin")
+      .setExpirationTime("1h").sign(createHmacKey());
+    expect(await verifySessionToken(old, SECRET, new Date())).toBeNull();
+  });
+  it("ausente/vazio/lixo => null; segredo curto => não cria token e não valida", async () => {
+    expect(await verifySessionToken(undefined, SECRET, now)).toBeNull();
+    expect(await verifySessionToken("", SECRET, now)).toBeNull();
+    await expect(createSessionToken("curto", claims, now)).rejects.toThrow();
+    await expect(createSessionToken(SECRET, { userId: 0, sessionVersion: 1 }, now)).rejects.toThrow();
+    expect(await verifySessionToken("a.b.c", "curto", now)).toBeNull();
+  });
+  it("readSessionSecret: <32 caracteres ou ausente => null", () => {
+    const old = process.env.SESSION_SECRET;
+    try {
+      delete process.env.SESSION_SECRET;
+      expect(readSessionSecret()).toBeNull();
+      process.env.SESSION_SECRET = "x".repeat(31);
+      expect(readSessionSecret()).toBeNull();
+      process.env.SESSION_SECRET = "x".repeat(32);
+      expect(readSessionSecret()).toBe("x".repeat(32));
+    } finally {
+      if (old === undefined) delete process.env.SESSION_SECRET;
+      else process.env.SESSION_SECRET = old;
+    }
+  });
+});
+
+describe("hash fictício", () => {
+  it("tem o mesmo custo do hash real e nunca confere", async () => {
+    expect(DUMMY_HASH).toMatch(/^scrypt:32768:8:1:/);
+    expect(parseHash(DUMMY_HASH)).not.toBeNull();
+    expect(await verifyPassword("qualquer coisa", DUMMY_HASH)).toBe(false);
   });
 });
 
@@ -113,6 +142,14 @@ describe("bloqueio progressivo de login", () => {
   it("libera depois da espera e ignora falhas fora da janela de 15 min", () => {
     expect(lockoutRemainingMs(fails(5, 61_000), now, IP_FAILURE_THRESHOLD)).toBe(0);
     expect(lockoutRemainingMs(fails(20, LOCKOUT_WINDOW_MS + 1), now, IP_FAILURE_THRESHOLD)).toBe(0);
+  });
+  it("limite por conta: acima do por IP, espera curta (30 s a 5 min) para não trancar a dona por muito tempo", () => {
+    expect(ACCOUNT_FAILURE_THRESHOLD).toBeGreaterThan(IP_FAILURE_THRESHOLD);
+    const w = (n: number) => lockoutRemainingMs(fails(n, 0), now, ACCOUNT_FAILURE_THRESHOLD, LOCKOUT_WINDOW_MS, ACCOUNT_BACKOFF);
+    expect(w(ACCOUNT_FAILURE_THRESHOLD - 1)).toBe(0);
+    expect(w(ACCOUNT_FAILURE_THRESHOLD)).toBe(30_000);
+    expect(w(ACCOUNT_FAILURE_THRESHOLD + 1)).toBe(60_000);
+    expect(w(500)).toBe(ACCOUNT_BACKOFF.maxMs);
   });
   it("limite global é bem maior que o por IP", () => {
     expect(GLOBAL_FAILURE_THRESHOLD).toBeGreaterThan(IP_FAILURE_THRESHOLD);

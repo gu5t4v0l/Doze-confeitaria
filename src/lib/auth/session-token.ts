@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
 import { SESSION_MAX_AGE_SECONDS } from "@/lib/auth/session-config";
 
@@ -6,11 +6,11 @@ const ISSUER = "doze-confeitaria";
 const AUDIENCE = "admin";
 export const MIN_SECRET_LENGTH = 32;
 
-export interface SessionContext {
-  /** SESSION_SECRET (>= 32 caracteres). */
-  secret: string;
-  /** ADMIN_PASSWORD_HASH atual: trocar a senha derruba as sessões antigas. */
-  passwordHash: string;
+export interface SessionClaims {
+  /** admin_users.id (claim `sub`). */
+  userId: number;
+  /** admin_users.session_version (claim `sv`): trocar senha / sair de todos incrementa e derruba as sessões. */
+  sessionVersion: number;
 }
 
 function key(secret: string): Uint8Array {
@@ -19,48 +19,45 @@ function key(secret: string): Uint8Array {
   return new Uint8Array(createHmac("sha256", secret).update("doze:session").digest());
 }
 
-/** Impressão digital do hash da senha (não revela o hash). */
-export function passwordFingerprint(passwordHash: string): string {
-  return createHash("sha256").update(passwordHash).digest("hex").slice(0, 16);
-}
+const isPositiveInt = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
 
-export async function createSessionToken(ctx: SessionContext, now: Date = new Date()): Promise<string> {
+export async function createSessionToken(secret: string, claims: SessionClaims, now: Date = new Date()): Promise<string> {
+  if (!isPositiveInt(claims.userId) || !isPositiveInt(claims.sessionVersion)) throw new Error("Sessão inválida.");
   const iat = Math.floor(now.getTime() / 1000);
-  return new SignJWT({ pwv: passwordFingerprint(ctx.passwordHash) })
+  return new SignJWT({ sv: claims.sessionVersion })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
-    .setSubject("admin")
+    .setSubject(String(claims.userId))
     .setIssuedAt(iat)
     .setExpirationTime(iat + SESSION_MAX_AGE_SECONDS)
-    .sign(key(ctx.secret));
+    .sign(key(secret));
 }
 
-/** true somente se assinatura, emissor, expiração e versão da senha conferem. */
+/** Claims se assinatura, emissor, audiência e expiração conferem; senão null. (O banco ainda precisa confirmar `sv`.) */
 export async function verifySessionToken(
   token: string | undefined,
-  ctx: SessionContext,
+  secret: string,
   now: Date = new Date(),
-): Promise<boolean> {
-  if (!token) return false;
+): Promise<SessionClaims | null> {
+  if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, key(ctx.secret), {
+    const { payload } = await jwtVerify(token, key(secret), {
       algorithms: ["HS256"],
       issuer: ISSUER,
       audience: AUDIENCE,
-      subject: "admin",
       currentDate: now,
     });
-    return payload.pwv === passwordFingerprint(ctx.passwordHash);
+    const userId = typeof payload.sub === "string" && /^[1-9]\d{0,9}$/.test(payload.sub) ? Number(payload.sub) : NaN;
+    if (!isPositiveInt(userId) || !isPositiveInt(payload.sv)) return null;
+    return { userId, sessionVersion: payload.sv };
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** Lê as variáveis de ambiente; null se o painel não estiver configurado. */
-export function readSessionContext(): SessionContext | null {
+/** SESSION_SECRET válido (>= 32 caracteres) ou null: sem ele NADA é liberado (falha segura). */
+export function readSessionSecret(): string | null {
   const secret = process.env.SESSION_SECRET ?? "";
-  const passwordHash = process.env.ADMIN_PASSWORD_HASH ?? "";
-  if (secret.length < MIN_SECRET_LENGTH || !passwordHash) return null;
-  return { secret, passwordHash };
+  return secret.length >= MIN_SECRET_LENGTH ? secret : null;
 }
